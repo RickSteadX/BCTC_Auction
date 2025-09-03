@@ -12,9 +12,26 @@ from auction_manager import AuctionManager, Auction
 
 
 def is_admin():
-    """Check if user has administrator permissions"""
-    def predicate(interaction: discord.Interaction) -> bool:
-        return interaction.user.guild_permissions.administrator
+    """Check if user has administrator permissions or is server owner"""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        # Check if user is server owner
+        if hasattr(interaction, 'guild') and interaction.guild:
+            if interaction.guild.owner_id == interaction.user.id:
+                return True
+        
+        # Check if user has administrator permissions
+        if interaction.user.guild_permissions.administrator:
+            return True
+            
+        # If neither, send helpful error message
+        await interaction.response.send_message(
+            "❌ **Access Denied**\n"
+            "You need administrator permissions or server ownership to use admin commands.\n"
+            f"Your permissions: `{interaction.user.guild_permissions.value}`\n"
+            "Use `/admin_test` to check your admin status.",
+            ephemeral=True
+        )
+        return False
     return app_commands.check(predicate)
 
 
@@ -373,6 +390,57 @@ class AdminCog(commands.Cog):
     
     def __init__(self, bot):
         self.bot = bot
+    
+    @app_commands.command(name="admin_test", description="[ADMIN] Test admin permissions")
+    async def admin_test(self, interaction: discord.Interaction):
+        """Test command to check admin access without decorator"""
+        # Manual permission check with detailed feedback
+        is_owner = interaction.guild and interaction.guild.owner_id == interaction.user.id
+        has_admin = interaction.user.guild_permissions.administrator
+        
+        embed = discord.Embed(
+            title="🔧 Admin Permission Test",
+            description="Checking your admin status...",
+            color=0x00ff00 if (is_owner or has_admin) else 0xff0000
+        )
+        
+        embed.add_field(name="Server Owner", value="✅ Yes" if is_owner else "❌ No", inline=True)
+        embed.add_field(name="Administrator", value="✅ Yes" if has_admin else "❌ No", inline=True)
+        embed.add_field(name="Access Level", value="🛡️ Admin" if (is_owner or has_admin) else "👤 User", inline=True)
+        
+        embed.add_field(name="User ID", value=f"`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Guild ID", value=f"`{interaction.guild.id if interaction.guild else 'None'}`", inline=True)
+        embed.add_field(name="Owner ID", value=f"`{interaction.guild.owner_id if interaction.guild else 'None'}`", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="admin_sync", description="[ADMIN] Sync bot commands")
+    async def admin_sync(self, interaction: discord.Interaction):
+        """Manually sync bot commands - no permission check for troubleshooting"""
+        try:
+            synced = await self.bot.tree.sync()
+            embed = discord.Embed(
+                title="🔄 Commands Synced",
+                description=f"Successfully synced {len(synced)} command(s) to Discord.",
+                color=0x00ff00
+            )
+            
+            # List synced commands
+            command_list = [f"• {cmd.name}" for cmd in synced]
+            if command_list:
+                embed.add_field(
+                    name="Synced Commands",
+                    value="\n".join(command_list[:10]) + ("\n..." if len(command_list) > 10 else ""),
+                    inline=False
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Failed to sync commands: {str(e)}",
+                ephemeral=True
+            )
     
     @app_commands.command(name="admin_auctions", description="[ADMIN] View and manage all active auctions")
     @is_admin()

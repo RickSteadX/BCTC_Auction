@@ -136,10 +136,13 @@ class DurationSelectionView(discord.ui.View):
             
             # Handle admin timer (10 seconds)
             if duration_value == "0.003":
-                # Check if user has admin permissions
-                if not self.user.guild_permissions.administrator:
+                # Check if user has admin permissions or is server owner
+                is_admin = (interaction.guild and interaction.guild.owner_id == interaction.user.id) or \
+                          interaction.user.guild_permissions.administrator
+                
+                if not is_admin:
                     await interaction.response.send_message(
-                        "❌ You need administrator permissions to use the 10-second timer!",
+                        "❌ You need administrator permissions or server ownership to use the 10-second timer!",
                         ephemeral=True
                     )
                     return
@@ -696,7 +699,12 @@ class AuctionCog(commands.Cog):
             
             # Check for recent auction spam (max 3 auctions in last hour)
             recent_auctions = await self.bot.auction_manager.get_user_recent_auctions(interaction.user.id, hours=1)
-            if len(recent_auctions) >= 3 and not interaction.user.guild_permissions.administrator:
+            
+            # Check if user is admin or server owner (exempt from rate limiting)
+            is_admin = (interaction.guild and interaction.guild.owner_id == interaction.user.id) or \
+                      interaction.user.guild_permissions.administrator
+            
+            if len(recent_auctions) >= 3 and not is_admin:
                 embed = discord.Embed(
                     title="❌ Rate Limit Exceeded",
                     description="You can only create 3 auctions per hour. Please wait before creating another auction.",
