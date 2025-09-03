@@ -6,6 +6,7 @@ import discord
 from typing import Dict, Any, Optional, List
 from auction_manager import Auction
 from monitoring import logger, metrics_collector, get_performance_timer
+from config import config
 
 
 class NotificationService:
@@ -28,29 +29,29 @@ class NotificationService:
             return public_sent
             
         except Exception as e:
-            print(f"Error in auction end notification process: {e}")
+            logger.error(f"Error in auction end notification process: {e}")
             return False
     
     async def _send_public_auction_end_notification(self, auction_data: Dict[str, Any]) -> bool:
         """Send public notification to the notification channel"""
         try:
             if not self.notification_channel_id:
-                print("No notification channel configured, skipping notification")
+                logger.warning("No notification channel configured, skipping notification")
                 return False
                 
             channel = self.bot.get_channel(self.notification_channel_id)
             if not channel or not hasattr(channel, 'send'):
-                print(f"Notification channel not found or invalid: {self.notification_channel_id}")
+                logger.error(f"Notification channel not found or invalid: {self.notification_channel_id}")
                 return False
             
             embed = self._create_auction_end_embed(auction_data)
             await channel.send(embed=embed)
             
-            print(f"Auction end notification sent for: {auction_data.get('item_name', 'Unknown Item')}")
+            logger.info(f"Auction end notification sent for: {auction_data.get('item_name', 'Unknown Item')}")
             return True
             
         except Exception as e:
-            print(f"Error sending public auction end notification: {e}")
+            logger.error(f"Error sending public auction end notification: {e}")
             return False
     
     async def _send_dm_notifications_for_auction_end(self, auction_data: Dict[str, Any]):
@@ -70,7 +71,7 @@ class NotificationService:
                 await self.send_dm_notification(buyer_id, buyer_embed)
                 
         except Exception as e:
-            print(f"Error sending DM notifications: {e}")
+            logger.error(f"Error sending DM notifications: {e}")
     
     async def send_auction_created_notification(self, auction: Auction) -> bool:
         """
@@ -93,11 +94,11 @@ class NotificationService:
             embed = self._create_auction_created_embed(auction)
             await channel.send(embed=embed)
             
-            print(f"New auction notification sent: {auction.auction_name}")
+            logger.info(f"New auction notification sent: {auction.auction_name}")
             return True
             
         except Exception as e:
-            print(f"Error sending auction created notification: {e}")
+            logger.error(f"Error sending auction created notification: {e}")
             return False
     
     def _create_auction_end_embed(self, auction_data: Dict[str, Any]) -> discord.Embed:
@@ -198,14 +199,14 @@ class NotificationService:
                 user = await self.bot.fetch_user(user_id)
             
             await user.send(embed=embed)
-            print(f"DM notification sent to user {user_id}")
+            logger.info(f"DM notification sent to user {user_id}")
             return True
             
         except discord.Forbidden:
-            print(f"Cannot send DM to user {user_id} - DMs disabled or not mutual")
+            logger.warning(f"Cannot send DM to user {user_id} - DMs disabled or not mutual")
             return False
         except Exception as e:
-            print(f"Error sending DM to user {user_id}: {e}")
+            logger.error(f"Error sending DM to user {user_id}: {e}")
             return False
     
     async def update_pinned_auction_list(self, auctions: List[Auction]) -> bool:
@@ -225,12 +226,12 @@ class NotificationService:
                 try:
                     old_message = await channel.fetch_message(self.pinned_message_id)
                     await old_message.delete()
-                    print(f"Deleted old auction list message: {self.pinned_message_id}")
+                    logger.info(f"Deleted old auction list message: {self.pinned_message_id}")
                 except discord.NotFound:
                     # Message was already deleted, that's fine
                     pass
                 except Exception as e:
-                    print(f"Error deleting old message: {e}")
+                    logger.warning(f"Error deleting old message: {e}")
                     # Continue anyway, we'll create a new one
                 
                 # Reset the stored message ID
@@ -241,11 +242,11 @@ class NotificationService:
             
             # Store the message ID for future deletion
             self.pinned_message_id = message.id
-            print(f"Created new auction list message: {message.id}")
+            logger.info(f"Created new auction list message: {message.id}")
             return True
                 
         except Exception as e:
-            print(f"Error updating auction list: {e}")
+            logger.error(f"Error updating auction list: {e}")
             return False
     
     def _create_pinned_auction_list_embed(self, auctions: List[Auction]) -> discord.Embed:

@@ -9,6 +9,8 @@ import logging.handlers
 import time
 import psutil
 import discord
+import sys
+import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, asdict
@@ -233,8 +235,56 @@ class StructuredLogger:
     
     def __init__(self, name: str = "BCTC_Auction"):
         self.logger = logging.getLogger(name)
+        self.emoji_fallbacks = self._create_emoji_fallbacks()
         self.setup_logging()
         self.discord_log_channel: Optional[discord.TextChannel] = None
+        
+        # Fix console encoding for Windows
+        self._setup_console_encoding()
+    
+    def _create_emoji_fallbacks(self) -> Dict[str, str]:
+        """Create fallback mappings for emojis that can't be displayed in console"""
+        return {
+            '🎮': '[GAME]',
+            '🔧': '[CONFIG]',
+            '✅': '[OK]',
+            '🤖': '[BOT]',
+            '🚀': '[START]',
+            '📦': '[PACKAGE]',
+            '📢': '[NOTIFY]',
+            '🔔': '[BELL]',
+            '🛡️': '[SHIELD]',
+            '🩺': '[HEALTH]',
+            '⏰': '[TIME]',
+            '🧹': '[CLEAN]',
+            '🔚': '[END]',
+            '✅': '[SUCCESS]',
+            '❌': '[ERROR]',
+            '📊': '[STATS]',
+            '📥': '[JOIN]',
+            '📤': '[LEAVE]',
+            '🎉': '[PARTY]',
+            '🔄': '[SYNC]'
+        }
+    
+    def _setup_console_encoding(self):
+        """Setup console encoding to handle Unicode characters"""
+        if sys.platform.startswith('win'):
+            try:
+                # Try to set console to UTF-8 if possible
+                import codecs
+                sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, 'replace')
+                sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, 'replace')
+            except Exception:
+                # If UTF-8 setup fails, we'll rely on emoji fallbacks
+                pass
+    
+    def _sanitize_message_for_console(self, message: str) -> str:
+        """Replace emojis with fallback text for console output"""
+        sanitized = message
+        for emoji, fallback in self.emoji_fallbacks.items():
+            sanitized = sanitized.replace(emoji, fallback)
+        return sanitized
         
     def setup_logging(self):
         """Configure logging with file rotation and formatting"""
@@ -243,19 +293,32 @@ class StructuredLogger:
         # Prevent duplicate handlers
         if self.logger.handlers:
             return
+        
+        # Custom formatter that handles emojis for console
+        class SafeConsoleFormatter(logging.Formatter):
+            def __init__(self, logger_instance):
+                super().__init__(config.LOG_FORMAT)
+                self.logger_instance = logger_instance
+                
+            def format(self, record):
+                # Get the formatted message
+                formatted = super().format(record)
+                # Sanitize for console output
+                return self.logger_instance._sanitize_message_for_console(formatted)
             
-        # Console handler
+        # Console handler with emoji-safe formatter
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter(config.LOG_FORMAT)
+        console_formatter = SafeConsoleFormatter(self)
         console_handler.setFormatter(console_formatter)
         self.logger.addHandler(console_handler)
         
-        # File handler with rotation
+        # File handler with rotation - uses UTF-8 encoding to preserve emojis
         file_handler = logging.handlers.RotatingFileHandler(
             config.LOG_FILE,
             maxBytes=config.LOG_MAX_SIZE_MB * 1024 * 1024,
-            backupCount=config.LOG_BACKUP_COUNT
+            backupCount=config.LOG_BACKUP_COUNT,
+            encoding='utf-8'  # Ensure UTF-8 encoding for file output
         )
         file_handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(config.LOG_FORMAT)
@@ -298,40 +361,72 @@ class StructuredLogger:
     
     def info(self, message: str, extra_data: Optional[Dict[str, Any]] = None, discord_log: bool = False):
         """Log info message"""
-        if extra_data:
-            self.logger.info(f"{message} | Data: {json.dumps(extra_data)}")
-        else:
-            self.logger.info(message)
+        try:
+            if extra_data:
+                self.logger.info(f"{message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.info(message)
+        except UnicodeEncodeError:
+            # Fallback: sanitize the message and try again
+            sanitized_message = self._sanitize_message_for_console(message)
+            if extra_data:
+                self.logger.info(f"{sanitized_message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.info(sanitized_message)
             
         if discord_log:
             asyncio.create_task(self.log_to_discord('INFO', message, extra_data))
     
     def warning(self, message: str, extra_data: Optional[Dict[str, Any]] = None, discord_log: bool = True):
         """Log warning message"""
-        if extra_data:
-            self.logger.warning(f"{message} | Data: {json.dumps(extra_data)}")
-        else:
-            self.logger.warning(message)
+        try:
+            if extra_data:
+                self.logger.warning(f"{message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.warning(message)
+        except UnicodeEncodeError:
+            # Fallback: sanitize the message and try again
+            sanitized_message = self._sanitize_message_for_console(message)
+            if extra_data:
+                self.logger.warning(f"{sanitized_message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.warning(sanitized_message)
             
         if discord_log:
             asyncio.create_task(self.log_to_discord('WARNING', message, extra_data))
     
-    def error(self, message: str, extra_data: Dict[str, Any] = None, discord_log: bool = True):
+    def error(self, message: str, extra_data: Optional[Dict[str, Any]] = None, discord_log: bool = True):
         """Log error message"""
-        if extra_data:
-            self.logger.error(f"{message} | Data: {json.dumps(extra_data)}")
-        else:
-            self.logger.error(message)
+        try:
+            if extra_data:
+                self.logger.error(f"{message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.error(message)
+        except UnicodeEncodeError:
+            # Fallback: sanitize the message and try again
+            sanitized_message = self._sanitize_message_for_console(message)
+            if extra_data:
+                self.logger.error(f"{sanitized_message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.error(sanitized_message)
             
         if discord_log:
             asyncio.create_task(self.log_to_discord('ERROR', message, extra_data))
     
-    def debug(self, message: str, extra_data: Dict[str, Any] = None):
+    def debug(self, message: str, extra_data: Optional[Dict[str, Any]] = None):
         """Log debug message"""
-        if extra_data:
-            self.logger.debug(f"{message} | Data: {json.dumps(extra_data)}")
-        else:
-            self.logger.debug(message)
+        try:
+            if extra_data:
+                self.logger.debug(f"{message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.debug(message)
+        except UnicodeEncodeError:
+            # Fallback: sanitize the message and try again
+            sanitized_message = self._sanitize_message_for_console(message)
+            if extra_data:
+                self.logger.debug(f"{sanitized_message} | Data: {json.dumps(extra_data)}")
+            else:
+                self.logger.debug(sanitized_message)
 
 
 class PerformanceTimer:

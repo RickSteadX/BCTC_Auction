@@ -67,6 +67,9 @@ class BotConfig:
     LOG_MAX_SIZE_MB = 10
     LOG_BACKUP_COUNT = 5
     
+    # Console encoding handling for Windows emoji support
+    CONSOLE_ENCODING_UTF8 = True
+    
     # Monitoring Configuration
     METRICS_ENABLED = True
     METRICS_COLLECTION_INTERVAL = 60  # seconds

@@ -112,7 +112,8 @@ class AuctionCreationModal(discord.ui.Modal):
 
 class DurationSelectionView(discord.ui.View):
     def __init__(self, item_name: str, quantity: int, auction_name: Optional[str],
-                 description: str, bin_price: Optional[float], user: Union[discord.User, discord.Member]):
+                 description: str, bin_price: Optional[float], user: Union[discord.User, discord.Member],
+                 is_admin: bool = False):
         super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.item_name = item_name
         self.quantity = quantity
@@ -120,94 +121,96 @@ class DurationSelectionView(discord.ui.View):
         self.description = description
         self.bin_price = bin_price
         self.user = user
-    
-    @discord.ui.select(
-        placeholder="Choose auction duration...",
-        options=[]  # Will be populated dynamically
-    )
-    async def duration_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
-        # Populate options based on user permissions
-        is_admin = (interaction.guild and interaction.guild.owner_id == interaction.user.id) or \
-                  interaction.user.guild_permissions.administrator
         
+        # Get duration options and populate select menu immediately
         duration_options = config.get_auction_duration_options(is_admin)
         
-        # Update select options dynamically
-        select.options = [
-            discord.SelectOption(
-                label=opt['label'],
-                value=str(opt['value']),
-                emoji=opt['emoji'],
-                description=opt.get('description', None)
-            )
-            for opt in duration_options
-        ]
-        
+        # Create select menu with proper options
+        select = discord.ui.Select(
+            placeholder="Choose auction duration...",
+            options=[
+                discord.SelectOption(
+                    label=opt['label'],
+                    value=str(opt['value']),
+                    emoji=opt['emoji'],
+                    description=opt.get('description', None)
+                )
+                for opt in duration_options
+            ]
+        )
+        select.callback = self.duration_callback
+        self.add_item(select)
+    
+    async def duration_callback(self, interaction: discord.Interaction):
+        """Handle duration selection"""
         try:
-            duration_value = select.values[0]
-            duration_hours = float(duration_value)
+            # Get selected duration from the select component in the interaction
+            # Type checking workaround - check if values exist in interaction data
+            if not hasattr(interaction, 'data') or not interaction.data:
+                await interaction.response.send_message(
+                    "❌ Invalid interaction data.",
+                    ephemeral=True
+                )
+                return
+                
+            if 'values' not in interaction.data or not interaction.data['values']:
+                await interaction.response.send_message(
+                    "❌ No duration selected.",
+                    ephemeral=True
+                )
+                return
             
-            # Format display duration
-            if duration_hours < 1:
-                display_duration = f"{int(duration_hours * 3600)} seconds"
-            elif duration_hours == 1:
-                display_duration = "1 hour"
-            else:
-                display_duration = f"{int(duration_hours)} hours"
-            
-            bot = interaction.client
+            selected_value = interaction.data['values'][0]
+            duration_hours = int(selected_value)
             
             # Create the auction
-            with get_performance_timer("auction_creation"):
-                auction = await bot.auction_manager.create_auction(
-                    owner_id=interaction.user.id,
-                    item_name=self.item_name,
-                    quantity=self.quantity,
-                    duration_hours=duration_hours,
-                    auction_name=self.auction_name,
-                    description=self.description,
-                    bin_price=self.bin_price
-                )
-            
-            # Record metrics
-            metrics_collector.record_counter("auctions_created")
-            if self.bin_price:
-                metrics_collector.record_counter("auctions_with_bin_created")
-            
-            # Log auction creation
-            logger.info(
-                f"Auction created: {auction.auction_name}",
-                {
-                    "auction_id": auction.auction_id,
-                    "owner_id": auction.owner_id,
-                    "item_name": auction.item_name,
-                    "duration_hours": duration_hours,
-                    "bin_price": self.bin_price
-                }
+            bot = interaction.client
+            auction = await bot.auction_manager.create_auction(
+                owner_id=self.user.id,
+                item_name=self.item_name,
+                quantity=self.quantity,
+                duration_hours=duration_hours,
+                auction_name=self.auction_name,
+                description=self.description,
+                bin_price=self.bin_price
             )
             
-            embed = discord.Embed(
-                title="✅ Auction Created Successfully!",
-                description=f"Your auction for **{self.item_name}** has been created.",
-                color=0x00ff00
-            )
-            embed.add_field(name="Auction ID", value=f"`{auction.auction_id}`", inline=False)
-            embed.add_field(name="Duration", value=display_duration, inline=True)
-            embed.add_field(name="End Time", value=f"<t:{int(auction.end_time.timestamp())}:R>", inline=True)
+            # Get the created auction for display (already have it, but let's get a fresh copy)
+            auction = await bot.auction_manager.get_auction(auction.auction_id)
             
-            if config.BID_SNIPING_PROTECTION_ENABLED:
-                embed.add_field(
-                    name="🛡️ Bid Sniping Protection", 
-                    value=f"Auction will extend by {config.BID_SNIPING_EXTENSION_MINUTES} minutes if bid placed in final {config.BID_SNIPING_WINDOW_MINUTES} minutes", 
-                    inline=False
+            if auction:
+                # Create success embed
+                embed = discord.Embed(
+                    title="✅ Auction Created Successfully!",
+                    description=f"Your auction for **{auction.auction_name}** has been created.",
+                    color=0x00ff00
                 )
-            
-            await interaction.response.edit_message(embed=embed, view=None)
-            
+                
+                # Add auction details
+                embed.add_field(name="📦 Item", value=auction.item_name, inline=True)
+                embed.add_field(name="🔢 Quantity", value=str(auction.quantity), inline=True)
+                embed.add_field(name="⏰ Duration", value=f"{auction.duration_hours} hours", inline=True)
+                
+                if auction.bin_price:
+                    embed.add_field(name="🎯 BIN Price", value=f"${auction.bin_price:.2f}", inline=True)
+                
+                embed.add_field(name="🏁 Ends", value=f"<t:{int(auction.end_time.timestamp())}:F>", inline=True)
+                embed.add_field(name="🆔 Auction ID", value=f"`{auction.auction_id}`", inline=True)
+                
+                await interaction.response.send_message(
+                    embed=embed,
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to retrieve created auction.",
+                    ephemeral=True
+                )
+                
         except Exception as e:
-            logger.error(f"Failed to create auction: {e}")
+            logger.error(f"Error in duration_callback: {e}")
             await interaction.response.send_message(
-                f"❌ Failed to create auction: {str(e)}",
+                f"❌ An error occurred: {str(e)}",
                 ephemeral=True
             )
 

@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 from typing import Optional
 
+from monitoring import logger
 from config import config
 from bot_events import BotEvents
 from auction_manager import AuctionManager
@@ -44,20 +45,20 @@ class BCTCAuctionBot(commands.Bot):
     
     async def close(self):
         """Clean shutdown of bot components"""
-        print("🛑 Shutting down bot...")
+        logger.info("🛑 Shutting down bot...")
         
         # Stop background tasks
         if hasattr(self.events_handler, 'cleanup_expired_auctions'):
             task = getattr(self.events_handler, 'cleanup_expired_auctions', None)
             if task and hasattr(task, 'is_running') and task.is_running():
                 task.cancel()
-                print("✅ Background tasks stopped")
+                logger.info("✅ Background tasks stopped")
         
         # Close auction manager connections if needed
         if self.auction_manager:
             # Add any cleanup for auction manager if needed
-            print("✅ Auction manager cleanup completed")
+            logger.info("✅ Auction manager cleanup completed")
         
         # Call parent close
         await super().close()
-        print("✅ Bot shutdown complete")
+        logger.info("✅ Bot shutdown complete")
