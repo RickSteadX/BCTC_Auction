@@ -9,12 +9,13 @@ import sys
 
 from bot import BCTCAuctionBot
 from config import config
+from monitoring import logger
 
 
 def setup_signal_handlers(bot: BCTCAuctionBot):
     """Setup graceful shutdown handlers"""
     def signal_handler(signum, frame):
-        print(f"\n🛑 Received signal {signum}, shutting down gracefully...")
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
         asyncio.create_task(bot.close())
         sys.exit(0)
     
@@ -24,39 +25,39 @@ def setup_signal_handlers(bot: BCTCAuctionBot):
 
 async def main():
     """Main entry point for the bot"""
-    print("🎮 BCTC Auction Bot - Starting Up")
-    print("=" * 40)
+    logger.info("🎮 BCTC Auction Bot - Starting Up")
+    logger.info("=" * 40)
     
     try:
         # Validate configuration
-        print("🔧 Validating configuration...")
+        logger.info("🔧 Validating configuration...")
         token = config.token
-        print("✅ Configuration valid")
+        logger.info("✅ Configuration valid")
         
         # Create bot instance
-        print("🤖 Creating bot instance...")
+        logger.info("🤖 Creating bot instance...")
         bot = BCTCAuctionBot()
         
         # Setup signal handlers for graceful shutdown
         setup_signal_handlers(bot)
         
         # Start the bot
-        print("🚀 Starting bot...")
-        print("=" * 40)
+        logger.info("🚀 Starting bot...")
+        logger.info("=" * 40)
         
         async with bot:
             await bot.start(token)
             
     except ValueError as e:
-        print(f"❌ Configuration error: {e}")
-        print("\n💡 Setup instructions:")
-        print("1. Copy .env.example to .env")
-        print("2. Set DISCORD_BOT_TOKEN=your_bot_token")
-        print("3. Optionally set NOTIFICATION_CHANNEL_ID=your_channel_id")
+        logger.error(f"Configuration error: {e}")
+        logger.info("Setup instructions:")
+        logger.info("1. Copy .env.example to .env")
+        logger.info("2. Set DISCORD_BOT_TOKEN=your_bot_token")
+        logger.info("3. Optionally set NOTIFICATION_CHANNEL_ID=your_channel_id")
         sys.exit(1)
         
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
+        logger.error(f"Fatal error: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
@@ -66,7 +67,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n👋 Bot stopped by user.")
+        logger.info("Bot stopped by user.")
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        logger.error(f"Unexpected error: {e}")
         sys.exit(1)

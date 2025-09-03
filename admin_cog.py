@@ -7,8 +7,11 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, List, Union
 import asyncio
+import json
 from datetime import datetime, timedelta
 from auction_manager import AuctionManager, Auction
+from monitoring import logger, metrics_collector, get_performance_timer
+from config import config
 
 
 def is_admin():
@@ -39,7 +42,7 @@ class AdminAuctionListView(discord.ui.View):
     """Admin view for managing auctions with enhanced controls"""
     
     def __init__(self, auctions: List[Auction], page: int = 0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.auctions = auctions
         self.page = page
         self.per_page = 5
@@ -153,7 +156,7 @@ class AdminAuctionControlView(discord.ui.View):
     """Individual auction control view for admins"""
     
     def __init__(self, auction: Auction):
-        super().__init__(timeout=300)
+        super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.auction = auction
     
     @discord.ui.button(label="🛑 Force End", style=discord.ButtonStyle.danger)
@@ -619,6 +622,241 @@ class AdminCog(commands.Cog):
         except Exception as e:
             await interaction.response.send_message(
                 f"❌ Failed to perform cleanup: {str(e)}",
+                ephemeral=True
+            )
+    
+    @app_commands.command(name="admin_health", description="[ADMIN] Check system health status")
+    @is_admin()
+    async def admin_health(self, interaction: discord.Interaction):
+        """Check system health status"""
+        try:
+            # Perform manual health check
+            if hasattr(self.bot, 'health_check_manager') and self.bot.health_check_manager:
+                health_data = await self.bot.health_check_manager.manual_health_check()
+                
+                embed = discord.Embed(
+                    title="🩺 System Health Status",
+                    color=0x00ff00 if health_data['summary']['overall_health'] else 0xff0000
+                )
+                
+                # Overall status
+                overall_status = "✅ Healthy" if health_data['summary']['overall_health'] else "❌ Unhealthy"
+                embed.add_field(name="Overall Status", value=overall_status, inline=True)
+                
+                # Service status
+                healthy_services = health_data['summary']['health_metrics']['services_healthy']
+                total_services = health_data['summary']['health_metrics']['services_total']
+                embed.add_field(name="Services", value=f"{healthy_services}/{total_services} healthy", inline=True)
+                
+                # Health percentage
+                health_percentage = health_data['summary']['health_metrics']['overall_percentage']
+                embed.add_field(name="Health Score", value=f"{health_percentage:.1f}%", inline=True)
+                
+                # Individual service status
+                service_status = []
+                for service_name, status_data in health_data['results'].items():
+                    status_icon = "✅" if status_data['is_healthy'] else "❌"
+                    response_time = ""
+                    if status_data.get('response_time_ms'):
+                        response_time = f" ({status_data['response_time_ms']:.1f}ms)"
+                    service_status.append(f"{status_icon} {service_name}{response_time}")
+                
+                embed.add_field(
+                    name="Service Details",
+                    value="\n".join(service_status) if service_status else "No services",
+                    inline=False
+                )
+                
+                # Active alerts
+                active_alerts = health_data['summary']['active_alerts']
+                if active_alerts:
+                    alert_list = []
+                    for alert in active_alerts[:5]:  # Show max 5 alerts
+                        alert_list.append(f"⚠️ {alert['service_name']}: {alert['message'][:50]}...")
+                    
+                    embed.add_field(
+                        name="Active Alerts",
+                        value="\n".join(alert_list),
+                        inline=False
+                    )
+                
+                embed.timestamp = datetime.now()
+                embed.set_footer(text="Health Check • Admin Only")
+                
+            else:
+                embed = discord.Embed(
+                    title="❌ Health Monitoring Unavailable",
+                    description="Health check manager not initialized.",
+                    color=0xff0000
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to check health status: {e}")
+            await interaction.response.send_message(
+                f"❌ Failed to check health status: {str(e)}",
+                ephemeral=True
+            )
+    
+    @app_commands.command(name="admin_metrics", description="[ADMIN] View system metrics and performance")
+    @is_admin()
+    async def admin_metrics(self, interaction: discord.Interaction):
+        """View system metrics and performance data"""
+        try:
+            metrics_summary = metrics_collector.get_metrics_summary()
+            
+            embed = discord.Embed(
+                title="📊 System Metrics",
+                description="Performance and usage statistics",
+                color=0x3498db
+            )
+            
+            # Counter metrics
+            if metrics_summary['counters']:
+                counter_list = []
+                for name, value in list(metrics_summary['counters'].items())[:10]:  # Show top 10
+                    counter_list.append(f"{name}: {value}")
+                
+                embed.add_field(
+                    name="Event Counters",
+                    value="\n".join(counter_list) if counter_list else "None",
+                    inline=True
+                )
+            
+            # Gauge metrics
+            if metrics_summary['gauges']:
+                gauge_list = []
+                for name, value in list(metrics_summary['gauges'].items())[:10]:  # Show top 10
+                    if isinstance(value, float):
+                        gauge_list.append(f"{name}: {value:.2f}")
+                    else:
+                        gauge_list.append(f"{name}: {value}")
+                
+                embed.add_field(
+                    name="Current Values",
+                    value="\n".join(gauge_list) if gauge_list else "None",
+                    inline=True
+                )
+            
+            # Timer metrics (performance)
+            if metrics_summary['timers']:
+                timer_list = []
+                for name, stats in list(metrics_summary['timers'].items())[:5]:  # Show top 5
+                    timer_list.append(f"{name}: {stats['avg']:.1f}ms avg ({stats['count']} calls)")
+                
+                embed.add_field(
+                    name="Performance Timers",
+                    value="\n".join(timer_list) if timer_list else "None",
+                    inline=False
+                )
+            
+            # Bid sniping statistics if available
+            if hasattr(self.bot, 'bid_sniping_protector') and self.bot.bid_sniping_protector:
+                sniping_stats = self.bot.bid_sniping_protector.get_sniping_statistics()
+                embed.add_field(
+                    name="🛡️ Bid Sniping Protection",
+                    value=f"Status: {'Enabled' if sniping_stats['protection_enabled'] else 'Disabled'}\n"
+                          f"Extensions: {sniping_stats['total_extensions']}\n"
+                          f"Success Rate: {sniping_stats['extension_success_rate']:.1f}%",
+                    inline=True
+                )
+            
+            embed.timestamp = datetime.now()
+            embed.set_footer(text="System Metrics • Admin Only")
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to get metrics: {e}")
+            await interaction.response.send_message(
+                f"❌ Failed to retrieve metrics: {str(e)}",
+                ephemeral=True
+            )
+    
+    @app_commands.command(name="admin_config", description="[ADMIN] View current bot configuration")
+    @is_admin()
+    async def admin_config(self, interaction: discord.Interaction):
+        """View current bot configuration"""
+        try:
+            embed = discord.Embed(
+                title="⚙️ Bot Configuration",
+                description="Current system settings",
+                color=0x95a5a6
+            )
+            
+            # Auction settings
+            embed.add_field(
+                name="Auction Settings",
+                value=f"Min Bid Increment: {config.MIN_BID_INCREMENT*100:.0f}%\n"
+                      f"Min Bid Amount: ${config.MIN_BID_AMOUNT:.2f}\n"
+                      f"Cleanup Interval: {config.CLEANUP_INTERVAL_MINUTES} min",
+                inline=True
+            )
+            
+            # Bid sniping protection
+            embed.add_field(
+                name="🛡️ Bid Sniping Protection",
+                value=f"Enabled: {config.BID_SNIPING_PROTECTION_ENABLED}\n"
+                      f"Window: {config.BID_SNIPING_WINDOW_MINUTES} min\n"
+                      f"Extension: {config.BID_SNIPING_EXTENSION_MINUTES} min",
+                inline=True
+            )
+            
+            # Rate limiting
+            embed.add_field(
+                name="Rate Limiting",
+                value=f"Max Active Auctions: {config.MAX_ACTIVE_AUCTIONS_PER_USER}\n"
+                      f"Max Created/Hour: {config.MAX_AUCTIONS_CREATED_PER_HOUR}\n"
+                      f"Max Bids/Min: {config.MAX_BIDS_PER_MINUTE}",
+                inline=True
+            )
+            
+            # Health monitoring
+            embed.add_field(
+                name="Health Monitoring",
+                value=f"Check Interval: {config.HEALTH_CHECK_INTERVAL_MINUTES} min\n"
+                      f"Metrics Enabled: {config.METRICS_ENABLED}\n"
+                      f"Log Level: {config.LOG_LEVEL}",
+                inline=True
+            )
+            
+            # Channel configuration
+            notification_channel = "Not set"
+            if config.notification_channel:
+                channel = self.bot.get_channel(config.notification_channel)
+                notification_channel = f"#{channel.name}" if channel else f"ID: {config.notification_channel}"
+            
+            log_channel = "Not set"
+            if config.log_channel:
+                channel = self.bot.get_channel(config.log_channel)
+                log_channel = f"#{channel.name}" if channel else f"ID: {config.log_channel}"
+            
+            embed.add_field(
+                name="Channels",
+                value=f"Notifications: {notification_channel}\n"
+                      f"Logs: {log_channel}",
+                inline=True
+            )
+            
+            # Database settings
+            embed.add_field(
+                name="Database",
+                value=f"Path: {config.DATABASE_PATH}\n"
+                      f"Backup Enabled: {config.DATABASE_BACKUP_ENABLED}\n"
+                      f"Backup Interval: {config.DATABASE_BACKUP_INTERVAL_HOURS}h",
+                inline=True
+            )
+            
+            embed.timestamp = datetime.now()
+            embed.set_footer(text="Configuration • Admin Only")
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Failed to get configuration: {e}")
+            await interaction.response.send_message(
+                f"❌ Failed to retrieve configuration: {str(e)}",
                 ephemeral=True
             )
 

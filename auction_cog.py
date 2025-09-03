@@ -3,8 +3,10 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, List, Union
 import asyncio
-from datetime import timedelta
+from datetime import timedelta, datetime
 from auction_manager import AuctionManager, Auction
+from monitoring import logger, metrics_collector, get_performance_timer
+from config import config
 
 class AuctionCreationModal(discord.ui.Modal):
     def __init__(self):
@@ -111,7 +113,7 @@ class AuctionCreationModal(discord.ui.Modal):
 class DurationSelectionView(discord.ui.View):
     def __init__(self, item_name: str, quantity: int, auction_name: Optional[str],
                  description: str, bin_price: Optional[float], user: Union[discord.User, discord.Member]):
-        super().__init__(timeout=300)
+        super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.item_name = item_name
         self.quantity = quantity
         self.auction_name = auction_name
@@ -121,48 +123,67 @@ class DurationSelectionView(discord.ui.View):
     
     @discord.ui.select(
         placeholder="Choose auction duration...",
-        options=[
-            discord.SelectOption(label="⚡ 10 Seconds (Admin)", value="0.003", emoji="⚡", description="Admin-only testing duration"),
-            discord.SelectOption(label="1 Hour", value="1", emoji="⏰"),
-            discord.SelectOption(label="12 Hours", value="12", emoji="🕐"),
-            discord.SelectOption(label="1 Day", value="24", emoji="📅"),
-            discord.SelectOption(label="3 Days", value="72", emoji="📆"),
-            discord.SelectOption(label="1 Week", value="168", emoji="🗓️")
-        ]
+        options=[]  # Will be populated dynamically
     )
     async def duration_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        # Populate options based on user permissions
+        is_admin = (interaction.guild and interaction.guild.owner_id == interaction.user.id) or \
+                  interaction.user.guild_permissions.administrator
+        
+        duration_options = config.get_auction_duration_options(is_admin)
+        
+        # Update select options dynamically
+        select.options = [
+            discord.SelectOption(
+                label=opt['label'],
+                value=str(opt['value']),
+                emoji=opt['emoji'],
+                description=opt.get('description', None)
+            )
+            for opt in duration_options
+        ]
+        
         try:
             duration_value = select.values[0]
+            duration_hours = float(duration_value)
             
-            # Handle admin timer (10 seconds)
-            if duration_value == "0.003":
-                # Check if user has admin permissions or is server owner
-                is_admin = (interaction.guild and interaction.guild.owner_id == interaction.user.id) or \
-                          interaction.user.guild_permissions.administrator
-                
-                if not is_admin:
-                    await interaction.response.send_message(
-                        "❌ You need administrator permissions or server ownership to use the 10-second timer!",
-                        ephemeral=True
-                    )
-                    return
-                duration_hours = 10 / 3600  # 10 seconds in hours
-                display_duration = "10 seconds"
+            # Format display duration
+            if duration_hours < 1:
+                display_duration = f"{int(duration_hours * 3600)} seconds"
+            elif duration_hours == 1:
+                display_duration = "1 hour"
             else:
-                duration_hours = float(duration_value)
-                display_duration = f"{int(duration_hours)} hour{'s' if duration_hours != 1 else ''}"
+                display_duration = f"{int(duration_hours)} hours"
             
             bot = interaction.client
             
             # Create the auction
-            auction = await bot.auction_manager.create_auction(
-                owner_id=interaction.user.id,
-                item_name=self.item_name,
-                quantity=self.quantity,
-                duration_hours=duration_hours,
-                auction_name=self.auction_name,
-                description=self.description,
-                bin_price=self.bin_price
+            with get_performance_timer("auction_creation"):
+                auction = await bot.auction_manager.create_auction(
+                    owner_id=interaction.user.id,
+                    item_name=self.item_name,
+                    quantity=self.quantity,
+                    duration_hours=duration_hours,
+                    auction_name=self.auction_name,
+                    description=self.description,
+                    bin_price=self.bin_price
+                )
+            
+            # Record metrics
+            metrics_collector.record_counter("auctions_created")
+            if self.bin_price:
+                metrics_collector.record_counter("auctions_with_bin_created")
+            
+            # Log auction creation
+            logger.info(
+                f"Auction created: {auction.auction_name}",
+                {
+                    "auction_id": auction.auction_id,
+                    "owner_id": auction.owner_id,
+                    "item_name": auction.item_name,
+                    "duration_hours": duration_hours,
+                    "bin_price": self.bin_price
+                }
             )
             
             embed = discord.Embed(
@@ -174,9 +195,17 @@ class DurationSelectionView(discord.ui.View):
             embed.add_field(name="Duration", value=display_duration, inline=True)
             embed.add_field(name="End Time", value=f"<t:{int(auction.end_time.timestamp())}:R>", inline=True)
             
+            if config.BID_SNIPING_PROTECTION_ENABLED:
+                embed.add_field(
+                    name="🛡️ Bid Sniping Protection", 
+                    value=f"Auction will extend by {config.BID_SNIPING_EXTENSION_MINUTES} minutes if bid placed in final {config.BID_SNIPING_WINDOW_MINUTES} minutes", 
+                    inline=False
+                )
+            
             await interaction.response.edit_message(embed=embed, view=None)
             
         except Exception as e:
+            logger.error(f"Failed to create auction: {e}")
             await interaction.response.send_message(
                 f"❌ Failed to create auction: {str(e)}",
                 ephemeral=True
@@ -184,7 +213,7 @@ class DurationSelectionView(discord.ui.View):
 
 class AuctionListView(discord.ui.View):
     def __init__(self, auctions: List[Auction], page: int = 0):
-        super().__init__(timeout=300)
+        super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.auctions = auctions
         self.page = page
         self.per_page = 5
@@ -292,7 +321,7 @@ class AuctionListView(discord.ui.View):
 
 class AuctionDetailView(discord.ui.View):
     def __init__(self, auction: Auction):
-        super().__init__(timeout=300)
+        super().__init__(timeout=config.VIEW_TIMEOUT_SECONDS)
         self.auction = auction
         
         # Disable BIN button if no BIN price set
@@ -304,7 +333,7 @@ class AuctionDetailView(discord.ui.View):
     @discord.ui.button(label="💰 Place Bid", style=discord.ButtonStyle.primary, custom_id="bid_button")
     async def place_bid(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Calculate minimum bid (10% more than current bid, minimum $0.50)
-        min_bid = max(0.50, self.auction.current_bid * 1.10)
+        min_bid = max(config.MIN_BID_AMOUNT, self.auction.current_bid * (1 + config.MIN_BID_INCREMENT))
         
         # Check if user is already the highest bidder
         if self.auction.current_bidder_id == interaction.user.id:
@@ -395,74 +424,131 @@ class BidModal(discord.ui.Modal):
         self.add_item(self.bid_input)
     
     async def on_submit(self, interaction: discord.Interaction):
-        try:
-            bid_amount = float(self.bid_input.value)
-            
-            if bid_amount < self.min_bid:
-                await interaction.response.send_message(
-                    f"❌ Bid too low! Minimum bid is ${self.min_bid:.2f}",
-                    ephemeral=True
-                )
-                return
-            
-            # Anti-abuse checks
-            # Check for suspicious bidding patterns (very high bids)
-            if bid_amount > self.auction.current_bid * 10 and bid_amount > 100:
-                # Flag suspicious high bid
-                embed = discord.Embed(
-                    title="⚠️ High Bid Warning",
-                    description=f"Your bid of ${bid_amount:.2f} is significantly higher than the current bid of ${self.auction.current_bid:.2f}. Please confirm this is intentional.",
-                    color=0xffaa00
-                )
-                embed.add_field(name="Current Bid", value=f"${self.auction.current_bid:.2f}", inline=True)
-                embed.add_field(name="Your Bid", value=f"${bid_amount:.2f}", inline=True)
-                embed.add_field(name="Difference", value=f"${bid_amount - self.auction.current_bid:.2f}", inline=True)
-                embed.set_footer(text="If this was intentional, place the bid again to confirm.")
+        with get_performance_timer("bid_placement"):
+            try:
+                bid_amount = float(self.bid_input.value)
                 
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            # Check for rapid bidding (potential bot)
-            if hasattr(interaction.user, '_last_bid_time'):
-                import time
-                time_since_last = time.time() - interaction.user._last_bid_time
-                if time_since_last < 5:  # Less than 5 seconds
+                if bid_amount < self.min_bid:
                     await interaction.response.send_message(
-                        "❌ Please wait at least 5 seconds between bids to prevent spam.",
+                        f"❌ Bid too low! Minimum bid is ${self.min_bid:.2f}",
                         ephemeral=True
                     )
                     return
-            
-            # Update last bid time for rate limiting
-            import time
-            interaction.user._last_bid_time = time.time()
-            
-            # Update the auction
-            bot = interaction.client
-            await bot.auction_manager.update_auction_bid(
-                self.auction.auction_id,
-                bid_amount,
-                interaction.user.id
-            )
-            
-            embed = discord.Embed(
-                title="✅ Bid Placed Successfully!",
-                description=f"You have placed a bid of **${bid_amount:.2f}** on **{self.auction.auction_name}**",
-                color=0x00ff00
-            )
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        except ValueError:
-            await interaction.response.send_message(
-                "❌ Invalid bid amount! Please enter a valid number.",
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Failed to place bid: {str(e)}",
-                ephemeral=True
-            )
+                
+                # Anti-abuse checks
+                # Check for suspicious bidding patterns (very high bids)
+                if bid_amount > self.auction.current_bid * 10 and bid_amount > 100:
+                    # Flag suspicious high bid
+                    embed = discord.Embed(
+                        title="⚠️ High Bid Warning",
+                        description=f"Your bid of ${bid_amount:.2f} is significantly higher than the current bid of ${self.auction.current_bid:.2f}. Please confirm this is intentional.",
+                        color=0xffaa00
+                    )
+                    embed.add_field(name="Current Bid", value=f"${self.auction.current_bid:.2f}", inline=True)
+                    embed.add_field(name="Your Bid", value=f"${bid_amount:.2f}", inline=True)
+                    embed.add_field(name="Difference", value=f"${bid_amount - self.auction.current_bid:.2f}", inline=True)
+                    embed.set_footer(text="If this was intentional, place the bid again to confirm.")
+                    
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    return
+                
+                # Check for rapid bidding (potential bot)
+                if hasattr(interaction.user, '_last_bid_time'):
+                    import time
+                    time_since_last = time.time() - interaction.user._last_bid_time
+                    if time_since_last < config.MIN_BID_TIME_BETWEEN_BIDS_SECONDS:  # Less than configured seconds
+                        await interaction.response.send_message(
+                            f"❌ Please wait at least {config.MIN_BID_TIME_BETWEEN_BIDS_SECONDS} seconds between bids to prevent spam.",
+                            ephemeral=True
+                        )
+                        return
+                
+                # Update last bid time for rate limiting
+                import time
+                interaction.user._last_bid_time = time.time()
+                
+                # Store previous bidder for outbid notification
+                previous_bidder_id = self.auction.current_bidder_id
+                
+                # Update the auction
+                bot = interaction.client
+                await bot.auction_manager.update_auction_bid(
+                    self.auction.auction_id,
+                    bid_amount,
+                    interaction.user.id
+                )
+                
+                # Record bid for pattern analysis
+                if hasattr(bot, 'bid_sniping_analyzer') and bot.bid_sniping_analyzer:
+                    bot.bid_sniping_analyzer.record_bid(
+                        self.auction.auction_id,
+                        interaction.user.id,
+                        datetime.now()
+                    )
+                
+                # Check for bid sniping protection
+                sniping_event = None
+                if hasattr(bot, 'bid_sniping_protector') and bot.bid_sniping_protector:
+                    sniping_event = await bot.bid_sniping_protector.handle_bid_placed(
+                        self.auction.auction_id,
+                        interaction.user.id,
+                        bid_amount
+                    )
+                
+                # Send outbid notification to previous bidder
+                if (previous_bidder_id and 
+                    hasattr(bot, 'notification_scheduler') and bot.notification_scheduler):
+                    await bot.notification_scheduler.notify_bid_outbid(
+                        self.auction,
+                        previous_bidder_id,
+                        bot.notification_service
+                    )
+                
+                # Create success embed
+                embed = discord.Embed(
+                    title="✅ Bid Placed Successfully!",
+                    description=f"You have placed a bid of **${bid_amount:.2f}** on **{self.auction.auction_name}**",
+                    color=0x00ff00
+                )
+                
+                # Add bid sniping information if applicable
+                if sniping_event and sniping_event.extended:
+                    embed.add_field(
+                        name="🛡️ Auction Extended",
+                        value=f"Your bid triggered bid sniping protection. Auction extended by {sniping_event.extension_minutes} minutes.",
+                        inline=False
+                    )
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                
+                # Record metrics
+                metrics_collector.record_counter("bids_placed")
+                if sniping_event and sniping_event.extended:
+                    metrics_collector.record_counter("bid_sniping_protections_triggered")
+                
+                # Log bid placement
+                logger.info(
+                    f"Bid placed on auction {self.auction.auction_id}",
+                    {
+                        "bidder_id": interaction.user.id,
+                        "bid_amount": bid_amount,
+                        "previous_bid": self.auction.current_bid,
+                        "sniping_protection_triggered": sniping_event.extended if sniping_event else False
+                    }
+                )
+                
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Invalid bid amount! Please enter a valid number.",
+                    ephemeral=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to place bid: {e}")
+                metrics_collector.record_counter("bid_placement_errors")
+                await interaction.response.send_message(
+                    f"❌ Failed to place bid: {str(e)}",
+                    ephemeral=True
+                )
 
 class BINConfirmationModal(discord.ui.Modal):
     def __init__(self, auction: Auction):
@@ -686,9 +772,9 @@ class AuctionCog(commands.Cog):
     async def create_auction(self, interaction: discord.Interaction):
         """Create a new auction using a modal with rate limiting"""
         try:
-            # Check rate limiting - max 5 active auctions per user
+            # Check rate limiting - max configurable active auctions per user
             user_auction_count = await self.bot.auction_manager.get_user_auction_count(interaction.user.id)
-            if user_auction_count >= 5:
+            if user_auction_count >= config.MAX_USER_ACTIVE_AUCTIONS:
                 embed = discord.Embed(
                     title="❌ Auction Limit Reached",
                     description="You can have a maximum of 5 active auctions at once. Please wait for some to end or withdraw existing auctions.",

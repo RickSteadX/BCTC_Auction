@@ -5,6 +5,7 @@ Handles auction end notifications, messaging, and pinned auction lists
 import discord
 from typing import Dict, Any, Optional, List
 from auction_manager import Auction
+from monitoring import logger, metrics_collector, get_performance_timer
 
 
 class NotificationService:
@@ -376,3 +377,118 @@ class NotificationService:
         embed.set_footer(text=f"Auction ID: {auction_data.get('auction_id', 'Unknown')}")
         
         return embed
+    
+    async def send_auction_ending_warning(self, auction: Auction, user_id: int) -> bool:
+        """Send warning that auction is ending soon"""
+        try:
+            embed = discord.Embed(
+                title="⏰ Auction Ending Soon!",
+                description=f"The auction for **{auction.item_name}** is ending in less than 1 hour!",
+                color=0xffaa00
+            )
+            
+            embed.add_field(name="📦 Item", value=auction.item_name, inline=True)
+            embed.add_field(name="💰 Current Bid", value=f"${auction.current_bid:.2f}" if auction.current_bid > 0 else "No bids", inline=True)
+            embed.add_field(name="⏰ Time Left", value=auction.time_remaining(), inline=True)
+            
+            if auction.bin_price:
+                embed.add_field(name="🎯 BIN Price", value=f"${auction.bin_price:.2f}", inline=True)
+            
+            embed.add_field(name="🏁 Ends", value=f"<t:{int(auction.end_time.timestamp())}:R>", inline=True)
+            embed.set_footer(text=f"Auction ID: {auction.auction_id}")
+            
+            await self.send_dm_notification(user_id, embed)
+            metrics_collector.record_counter("auction_ending_warnings_sent")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send auction ending warning: {e}")
+            return False
+    
+    async def send_outbid_notification(self, auction: Auction, user_id: int) -> bool:
+        """Send notification when user has been outbid"""
+        try:
+            embed = discord.Embed(
+                title="💔 You've Been Outbid!",
+                description=f"Someone has placed a higher bid on **{auction.item_name}**.",
+                color=0xff6b6b
+            )
+            
+            embed.add_field(name="📦 Item", value=auction.item_name, inline=True)
+            embed.add_field(name="💰 New High Bid", value=f"${auction.current_bid:.2f}", inline=True)
+            embed.add_field(name="⏰ Time Left", value=auction.time_remaining(), inline=True)
+            
+            min_bid = max(config.MIN_BID_AMOUNT, auction.current_bid * (1 + config.MIN_BID_INCREMENT))
+            embed.add_field(name="💡 Minimum Bid", value=f"${min_bid:.2f}", inline=True)
+            
+            if auction.bin_price:
+                embed.add_field(name="🎯 BIN Price", value=f"${auction.bin_price:.2f}", inline=True)
+            
+            embed.add_field(name="🏁 Ends", value=f"<t:{int(auction.end_time.timestamp())}:R>", inline=True)
+            embed.set_footer(text=f"Use /auctions to place a new bid • ID: {auction.auction_id}")
+            
+            await self.send_dm_notification(user_id, embed)
+            metrics_collector.record_counter("outbid_notifications_sent")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send outbid notification: {e}")
+            return False
+    
+    async def send_auction_extension_notification(self, auction: Auction, sniping_event) -> bool:
+        """Send notification about auction extension due to bid sniping protection"""
+        try:
+            if not self.notification_channel_id:
+                return False
+                
+            channel = self.bot.get_channel(self.notification_channel_id)
+            if not channel or not hasattr(channel, 'send'):
+                return False
+            
+            embed = discord.Embed(
+                title="🛡️ Auction Extended - Bid Sniping Protection",
+                description=f"Auction for **{auction.item_name}** has been extended!",
+                color=0x0099ff
+            )
+            
+            embed.add_field(name="📦 Item", value=auction.item_name, inline=True)
+            embed.add_field(name="💰 Current Bid", value=f"${sniping_event.bid_amount:.2f}", inline=True)
+            embed.add_field(name="👤 Bidder", value=f"<@{sniping_event.bidder_id}>", inline=True)
+            
+            embed.add_field(
+                name="⏰ Extension", 
+                value=f"+{sniping_event.extension_minutes} minutes", 
+                inline=True
+            )
+            
+            embed.add_field(
+                name="🕐 Time Remaining", 
+                value=f"{sniping_event.time_remaining_minutes:.1f} minutes when bid placed", 
+                inline=True
+            )
+            
+            embed.add_field(name="🏁 New End Time", value=f"<t:{int(auction.end_time.timestamp())}:R>", inline=True)
+            
+            embed.set_footer(text=f"Auction ID: {auction.auction_id}")
+            
+            await channel.send(embed=embed)
+            
+            # Also send DM to auction owner
+            owner_embed = discord.Embed(
+                title="🛡️ Your Auction Has Been Extended",
+                description=f"Your auction for **{auction.item_name}** was extended due to a late bid.",
+                color=0x0099ff
+            )
+            owner_embed.add_field(name="💰 New Bid", value=f"${sniping_event.bid_amount:.2f}", inline=True)
+            owner_embed.add_field(name="⏰ Extension", value=f"+{sniping_event.extension_minutes} minutes", inline=True)
+            owner_embed.set_footer(text=f"Auction ID: {auction.auction_id}")
+            
+            await self.send_dm_notification(auction.owner_id, owner_embed)
+            
+            metrics_collector.record_counter("auction_extension_notifications_sent")
+            logger.info(f"Auction extension notification sent for {auction.auction_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send auction extension notification: {e}")
+            return False
