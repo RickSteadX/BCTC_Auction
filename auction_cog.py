@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from typing import Optional, List, Union
 import asyncio
+from datetime import timedelta
 from auction_manager import AuctionManager, Auction
 
 class AuctionCreationModal(discord.ui.Modal):
@@ -401,6 +402,38 @@ class BidModal(discord.ui.Modal):
                 )
                 return
             
+            # Anti-abuse checks
+            # Check for suspicious bidding patterns (very high bids)
+            if bid_amount > self.auction.current_bid * 10 and bid_amount > 100:
+                # Flag suspicious high bid
+                embed = discord.Embed(
+                    title="⚠️ High Bid Warning",
+                    description=f"Your bid of ${bid_amount:.2f} is significantly higher than the current bid of ${self.auction.current_bid:.2f}. Please confirm this is intentional.",
+                    color=0xffaa00
+                )
+                embed.add_field(name="Current Bid", value=f"${self.auction.current_bid:.2f}", inline=True)
+                embed.add_field(name="Your Bid", value=f"${bid_amount:.2f}", inline=True)
+                embed.add_field(name="Difference", value=f"${bid_amount - self.auction.current_bid:.2f}", inline=True)
+                embed.set_footer(text="If this was intentional, place the bid again to confirm.")
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Check for rapid bidding (potential bot)
+            if hasattr(interaction.user, '_last_bid_time'):
+                import time
+                time_since_last = time.time() - interaction.user._last_bid_time
+                if time_since_last < 5:  # Less than 5 seconds
+                    await interaction.response.send_message(
+                        "❌ Please wait at least 5 seconds between bids to prevent spam.",
+                        ephemeral=True
+                    )
+                    return
+            
+            # Update last bid time for rate limiting
+            import time
+            interaction.user._last_bid_time = time.time()
+            
             # Update the auction
             bot = interaction.client
             await bot.auction_manager.update_auction_bid(
@@ -648,9 +681,43 @@ class AuctionCog(commands.Cog):
     
     @app_commands.command(name="create", description="Create a new auction")
     async def create_auction(self, interaction: discord.Interaction):
-        """Create a new auction using a modal"""
-        modal = AuctionCreationModal()
-        await interaction.response.send_modal(modal)
+        """Create a new auction using a modal with rate limiting"""
+        try:
+            # Check rate limiting - max 5 active auctions per user
+            user_auction_count = await self.bot.auction_manager.get_user_auction_count(interaction.user.id)
+            if user_auction_count >= 5:
+                embed = discord.Embed(
+                    title="❌ Auction Limit Reached",
+                    description="You can have a maximum of 5 active auctions at once. Please wait for some to end or withdraw existing auctions.",
+                    color=0xff4444
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Check for recent auction spam (max 3 auctions in last hour)
+            recent_auctions = await self.bot.auction_manager.get_user_recent_auctions(interaction.user.id, hours=1)
+            if len(recent_auctions) >= 3 and not interaction.user.guild_permissions.administrator:
+                embed = discord.Embed(
+                    title="❌ Rate Limit Exceeded",
+                    description="You can only create 3 auctions per hour. Please wait before creating another auction.",
+                    color=0xff4444
+                )
+                embed.add_field(
+                    name="Next Available",
+                    value=f"<t:{int((recent_auctions[0].start_time + timedelta(hours=1)).timestamp())}:R>",
+                    inline=True
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            modal = AuctionCreationModal()
+            await interaction.response.send_modal(modal)
+            
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ An error occurred: {str(e)}",
+                ephemeral=True
+            )
     
     @app_commands.command(name="auctions", description="View all active auctions")
     async def list_auctions(self, interaction: discord.Interaction):

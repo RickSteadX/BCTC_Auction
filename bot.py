@@ -37,6 +37,11 @@ class BCTCAuctionBot(commands.Bot):
         """Called when the bot is starting up"""
         await self.events_handler.setup_bot()
     
+    async def handle_auction_end(self, auction_data):
+        """Delegate auction end handling to events handler"""
+        if self.events_handler:
+            await self.events_handler.handle_auction_end(auction_data)
+    
     async def close(self):
         """Clean shutdown of bot components"""
         print("🛑 Shutting down bot...")

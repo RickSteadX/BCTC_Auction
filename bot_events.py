@@ -44,8 +44,10 @@ class BotEvents:
         try:
             await self.bot.load_extension('auction_cog')
             print("✅ Auction cog loaded")
+            await self.bot.load_extension('admin_cog')
+            print("✅ Admin cog loaded")
         except Exception as e:
-            print(f"❌ Failed to load auction cog: {e}")
+            print(f"❌ Failed to load cogs: {e}")
             raise
         
         # Start background tasks
@@ -92,35 +94,43 @@ class BotEvents:
         await self.bot.wait_until_ready()
         print("✅ Bot ready, starting auction cleanup task")
     
-    async def handle_auction_end(self, auction):
+    async def handle_auction_end(self, auction_or_data):
         """
         Handle auction ending logic
         
         Args:
-            auction: Auction object that has expired
+            auction_or_data: Either an Auction object or dictionary with auction data
         """
         try:
-            print(f"🔚 Handling end of auction: {auction.auction_name}")
+            # Handle both Auction objects and dictionaries
+            if hasattr(auction_or_data, 'auction_id'):  # It's an Auction object
+                auction = auction_or_data
+                print(f"🔚 Handling end of auction: {auction.auction_name}")
+                
+                # Convert auction to dict for notification
+                auction_data = {
+                    'auction_id': auction.auction_id,
+                    'item_name': auction.item_name,
+                    'current_bid': auction.current_bid,
+                    'owner_id': auction.owner_id,
+                    'current_bidder_id': auction.current_bidder_id
+                }
+                
+                # Remove auction from database (for expired auctions)
+                await self.auction_manager.remove_auction(auction.auction_id)
+                print(f"✅ Auction {auction.auction_name} processed successfully")
+                
+            else:  # It's a dictionary (from BIN purchases)
+                auction_data = auction_or_data
+                print(f"🔚 Handling end of auction: {auction_data.get('item_name', 'Unknown Item')} (BIN purchase)")
             
-            # Convert auction to dict for notification
-            auction_data = {
-                'auction_id': auction.auction_id,
-                'item_name': auction.item_name,
-                'current_bid': auction.current_bid,
-                'owner_id': auction.owner_id,
-                'current_bidder_id': auction.current_bidder_id
-            }
-            
-            # Send notification
+            # Send notification for both cases
             if self.notification_service:
                 await self.notification_service.send_auction_end_notification(auction_data)
             
-            # Remove auction from database
-            await self.auction_manager.remove_auction(auction.auction_id)
-            print(f"✅ Auction {auction.auction_name} processed successfully")
-            
         except Exception as e:
-            print(f"❌ Error handling auction end for {auction.auction_id}: {e}")
+            auction_id = getattr(auction_or_data, 'auction_id', auction_or_data.get('auction_id', 'Unknown'))
+            print(f"❌ Error handling auction end for {auction_id}: {e}")
     
     async def on_ready(self):
         """Called when bot is ready"""

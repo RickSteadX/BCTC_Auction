@@ -206,6 +206,87 @@ class AuctionManager:
             await db.execute("DELETE FROM auctions WHERE auction_id = ?", (auction_id,))
             await db.commit()
     
+    async def get_user_auction_count(self, user_id: int) -> int:
+        """Get count of active auctions for a user"""
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM auctions WHERE owner_id = ? AND status = 'active'",
+                (user_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                return result[0] if result else 0
+    
+    async def get_user_recent_auctions(self, user_id: int, hours: int = 24) -> List[Auction]:
+        """Get user's recent auctions within specified hours"""
+        cutoff_time = (datetime.now() - timedelta(hours=hours)).isoformat()
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT * FROM auctions WHERE owner_id = ? AND start_time >= ? ORDER BY start_time DESC",
+                (user_id, cutoff_time)
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [self._row_to_auction(row) for row in rows]
+    
+    async def get_auction_statistics(self) -> dict:
+        """Get comprehensive auction statistics"""
+        async with aiosqlite.connect(self.db_path) as db:
+            stats = {}
+            
+            # Count by status
+            async with db.execute("SELECT status, COUNT(*) FROM auctions GROUP BY status") as cursor:
+                status_counts = await cursor.fetchall()
+                stats['by_status'] = {row[0]: row[1] for row in status_counts}
+            
+            # Active auction value
+            async with db.execute(
+                "SELECT SUM(current_bid) FROM auctions WHERE status = 'active'"
+            ) as cursor:
+                result = await cursor.fetchone()
+                stats['active_value'] = result[0] if result[0] else 0.0
+            
+            # Count unique users
+            async with db.execute(
+                "SELECT COUNT(DISTINCT owner_id) FROM auctions WHERE status = 'active'"
+            ) as cursor:
+                result = await cursor.fetchone()
+                stats['unique_sellers'] = result[0] if result else 0
+            
+            # Count unique bidders
+            async with db.execute(
+                "SELECT COUNT(DISTINCT current_bidder_id) FROM auctions WHERE status = 'active' AND current_bidder_id IS NOT NULL"
+            ) as cursor:
+                result = await cursor.fetchone()
+                stats['unique_bidders'] = result[0] if result else 0
+            
+            return stats
+    
+    async def force_end_auction(self, auction_id: str, reason: str = "Administrative action") -> bool:
+        """Force end an auction with admin reason"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE auctions SET status = 'ended' WHERE auction_id = ?",
+                (auction_id,)
+            )
+            await db.commit()
+            return True
+    
+    async def extend_auction(self, auction_id: str, additional_hours: float) -> bool:
+        """Extend auction duration by specified hours"""
+        auction = await self.get_auction(auction_id)
+        if not auction:
+            return False
+        
+        new_end_time = auction.end_time + timedelta(hours=additional_hours)
+        new_duration = auction.duration_hours + additional_hours
+        
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE auctions SET end_time = ?, duration_hours = ? WHERE auction_id = ?",
+                (new_end_time.isoformat(), new_duration, auction_id)
+            )
+            await db.commit()
+            return True
+    
     async def get_expired_auctions(self) -> List[Auction]:
         """Get all expired active auctions"""
         current_time = datetime.now().isoformat()

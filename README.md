@@ -5,10 +5,10 @@ A Discord bot for managing Brawlhalla Code Trading Center auctions with advanced
 ## Features
 
 ### Core Functionality
-- **Auction Creation**: `/create` command with modal interface
+- **Auction Creation**: `/create` command with modal interface and rate limiting
 - **Auction Browsing**: `/auctions` command with paginated inline button navigation
 - **Auction Management**: `/myauctions` command for managing your own auctions
-- **Real-time Bidding**: Interactive bid system with 10% minimum increments
+- **Real-time Bidding**: Interactive bid system with 10% minimum increments and anti-abuse protection
 - **Buy-It-Now**: Instant purchase option with confirmation modal
 - **Automatic Expiration**: Background task handling auction timeouts
 - **Notifications**: Automatic notifications when auctions end
@@ -20,6 +20,14 @@ A Discord bot for managing Brawlhalla Code Trading Center auctions with advanced
 - **Embeds**: Beautiful, information-rich auction displays
 - **Ephemeral Messages**: Private responses for user interactions
 - **Discord Timestamps**: Dynamic time formatting with relative timestamps
+
+### Admin & Security Features
+- **Admin Commands**: Comprehensive management tools for administrators
+- **Abuse Prevention**: Rate limiting, bid validation, and spam protection
+- **User Investigation**: Detailed user activity reports and statistics
+- **Auction Control**: Force end, extend time, or audit specific auctions
+- **System Monitoring**: Real-time statistics and health metrics
+- **Security Checks**: Permission validation and ownership verification
 
 ## Setup Instructions
 
@@ -70,6 +78,8 @@ python main.py
 
 ## Bot Commands
 
+### User Commands
+
 ### `/create`
 Opens a modal to create a new auction with the following fields:
 - **Item Name** (required): The item contained in the code
@@ -79,6 +89,10 @@ Opens a modal to create a new auction with the following fields:
 - **BIN Price** (optional): Buy-It-Now price
 
 After submitting, select duration: 1h, 12h, 24h, 3 days, or 7 days.
+
+**Rate Limiting:**
+- Maximum 5 active auctions per user
+- Maximum 3 new auctions per hour (admins exempt)
 
 ### `/auctions`
 Displays all active auctions in a paginated list with:
@@ -91,6 +105,35 @@ Shows your active auctions with management options:
 - Edit auction name and description
 - Withdraw auctions
 - View current status and bids
+
+### Admin Commands
+
+### `/admin_auctions`
+**[ADMIN ONLY]** Comprehensive auction management interface:
+- View all active auctions with detailed information
+- Administrative controls for each auction
+- Force end, extend time, or audit specific auctions
+- Block users (planned feature)
+
+### `/admin_stats`
+**[ADMIN ONLY]** System statistics and monitoring:
+- Active auction count and total value
+- Unique seller and bidder counts
+- BIN auction statistics
+- Real-time system health metrics
+
+### `/admin_user <user>`
+**[ADMIN ONLY]** User activity investigation:
+- View user's active auctions and bidding history
+- Account age and server join information
+- Auction value analysis
+- Abuse detection insights
+
+### `/admin_cleanup`
+**[ADMIN ONLY]** Force cleanup of expired auctions:
+- Manually trigger auction expiration processing
+- Detailed cleanup statistics
+- Error reporting for failed cleanups
 
 ## Auction Flow
 
@@ -130,6 +173,7 @@ BCTC_Auction/
 ├── notification_service.py  # Auction notification system
 ├── auction_manager.py       # Database operations and auction logic
 ├── auction_cog.py           # Discord commands and UI interactions
+├── admin_cog.py             # Admin commands and management tools
 ├── requirements.txt         # Python dependencies
 ├── .env.example            # Configuration template
 ├── test_refactored.py      # Refactoring validation script

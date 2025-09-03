@@ -208,7 +208,7 @@ class NotificationService:
             return False
     
     async def update_pinned_auction_list(self, auctions: List[Auction]) -> bool:
-        """Update the pinned auction list message"""
+        """Update the pinned auction list message by deleting and re-sending"""
         try:
             if not self.notification_channel_id:
                 return False
@@ -219,23 +219,26 @@ class NotificationService:
             
             embed = self._create_pinned_auction_list_embed(auctions)
             
-            # Try to edit existing pinned message
+            # Delete existing pinned message if it exists
             if self.pinned_message_id:
                 try:
-                    message = await channel.fetch_message(self.pinned_message_id)
-                    await message.edit(embed=embed)
-                    return True
+                    old_message = await channel.fetch_message(self.pinned_message_id)
+                    await old_message.delete()
+                    print(f"Deleted old pinned auction list message: {self.pinned_message_id}")
                 except discord.NotFound:
-                    # Message was deleted, create a new one
-                    self.pinned_message_id = None
+                    # Message was already deleted, that's fine
+                    pass
                 except Exception as e:
-                    print(f"Error editing pinned message: {e}")
-                    # Fall through to create new message
+                    print(f"Error deleting old pinned message: {e}")
+                    # Continue anyway, we'll create a new one
+                
+                # Reset the stored message ID
+                self.pinned_message_id = None
             
             # Create new pinned message
             message = await channel.send(embed=embed)
             
-            # Try to pin the message
+            # Try to pin the new message
             try:
                 await message.pin()
                 self.pinned_message_id = message.id
@@ -243,11 +246,11 @@ class NotificationService:
                 return True
             except discord.Forbidden:
                 print("Cannot pin message - missing permissions")
-                self.pinned_message_id = message.id  # Still store ID for editing
+                self.pinned_message_id = message.id  # Still store ID for future deletion
                 return True
             except Exception as e:
                 print(f"Error pinning message: {e}")
-                self.pinned_message_id = message.id  # Still store ID for editing
+                self.pinned_message_id = message.id  # Still store ID for future deletion
                 return True
                 
         except Exception as e:
