@@ -76,6 +76,47 @@ pip install -r requirements.txt
 python main.py
 ```
 
+## Testing
+
+The bot includes comprehensive unit tests using pytest.
+
+### Running Tests
+
+```bash
+# Run all tests
+python run_tests.py
+
+# Or use pytest directly
+pytest tests/ -v
+
+# Run specific test file
+python run_tests.py test_auction_manager
+
+# Run specific test
+pytest tests/test_auction_manager.py::TestAuctionManager::test_create_auction -v
+```
+
+### Test Structure
+
+```
+tests/
+├── __init__.py
+├── conftest.py              # Pytest fixtures and configuration
+├── test_auction_manager.py  # AuctionManager and Auction class tests
+├── test_notification_service.py  # NotificationService tests
+├── test_admin_cog.py        # Admin functionality tests
+├── test_config.py           # Configuration tests
+└── test_bot_events.py       # Bot events and background tasks tests
+```
+
+### Test Coverage
+
+- **AuctionManager**: Database operations, auction CRUD, admin functions
+- **NotificationService**: DM notifications, embeds, pinned messages
+- **Admin Functions**: Permission checks, commands, statistics
+- **Configuration**: Environment variables, lazy loading
+- **Bot Events**: Background tasks, event handlers, cleanup
+
 ## Bot Commands
 
 ### User Commands
@@ -176,8 +217,16 @@ BCTC_Auction/
 ├── admin_cog.py             # Admin commands and management tools
 ├── requirements.txt         # Python dependencies
 ├── .env.example            # Configuration template
-├── test_refactored.py      # Refactoring validation script
-└── README.md               # This file
+├── run_tests.py            # Test runner script
+├── pytest.ini              # Pytest configuration
+└── tests/                   # Unit tests directory
+    ├── __init__.py
+    ├── conftest.py
+    ├── test_auction_manager.py
+    ├── test_notification_service.py
+    ├── test_admin_cog.py
+    ├── test_config.py
+    └── test_bot_events.py
 ```
 
 ## Error Handling
